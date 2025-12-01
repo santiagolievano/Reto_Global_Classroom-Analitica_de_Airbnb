@@ -5,6 +5,7 @@ import joblib
 from dash import Dash, dcc, html, Input, Output, State
 import plotly.express as px
 
+
 # 1. Carga de datos y modelos
 
 DATA_PATH = "base_final_con_recomendacion.csv"
@@ -14,25 +15,26 @@ TARGET_REG = "price"
 TARGET_CLF = "recomended"
 FEATURE_COLS = [c for c in df.columns if c not in [TARGET_REG, TARGET_CLF]]
 
-# scaler y modelos entrenados
+# scaler y modelo de regresión entrenado
 scaler = joblib.load("scaler_airbnb_london.pkl")
 reg_model = joblib.load("mlp_regresion_price_airbnb.pkl")
-clf_model = joblib.load("mlp_clasificacion_recomended_airbnb.pkl")
 
-# Valores por defecto: medianas para numéricas, 0 para dummies
+
+# 2. Valores por defecto para construir el vector de entrada
+
 default_values: dict[str, float] = {}
 for col in FEATURE_COLS:
-    # si todos los valores son 0/1 asumimos dummy
     uniques = set(df[col].dropna().unique())
-    if uniques <= {0, 1}:
+    if uniques <= {0, 1}:  # dummies
         default_values[col] = 0.0
     else:
         default_values[col] = float(df[col].median())
 
 
-# Mapeos de dropdowns -> columnas dummy
+# Mapeos de dropdowns -> columnas dummy (ojo con el nombre real del csv)
+
 ZONA_MAP = {
-    "Central": None,  # categoría base (todas las dummies en 0)
+    "Central": None,
     "East": "neighbourhood_cleansed_East",
     "North": "neighbourhood_cleansed_North",
     "South": "neighbourhood_cleansed_South",
@@ -40,13 +42,13 @@ ZONA_MAP = {
 }
 
 PROPERTY_MAP = {
-    "Entire home/apt": None,  # base
-    "Private room": "property_type_Private room",
+    "Entire home/apt": None,
+    "Private room": "property_type_Private Room",  # nombre exacto de la columna
     "Other": "property_type_Other",
 }
 
 ROOM_MAP = {
-    "Entire home/apt": None,  # base
+    "Entire home/apt": None,
     "Private room": "room_type_Private room",
     "Shared room": "room_type_Shared room",
     "Hotel room": "room_type_Hotel room",
@@ -64,15 +66,11 @@ def build_feature_vector(
     property_type,
     room_type,
 ):
-    """
-    Construye un vector de features en el mismo orden de FEATURE_COLS
-    a partir de los inputs del usuario y valores por defecto.
-    """
-    # empezamos de la configuración "típica": medianas y dummies en 0
+    """Construye el vector de características en el mismo orden que se usó para entrenar."""
     x = default_values.copy()
 
     # numéricas principales
-    if accommodates is not None:
+    if accommodates is not None and "accommodates" in x:
         x["accommodates"] = accommodates
     if bedrooms is not None and "bedrooms" in x:
         x["bedrooms"] = bedrooms
@@ -85,7 +83,7 @@ def build_feature_vector(
     if availability_365 is not None and "availability_365" in x:
         x["availability_365"] = availability_365
 
-    # resetear dummies de zona/property/room
+    # reset dummies
     for col in ZONA_MAP.values():
         if col is not None and col in x:
             x[col] = 0
@@ -96,35 +94,29 @@ def build_feature_vector(
         if col is not None and col in x:
             x[col] = 0
 
-    # zona
+    # prender dummies seleccionadas
     col_z = ZONA_MAP.get(zona)
     if col_z is not None and col_z in x:
         x[col_z] = 1
 
-    # tipo de propiedad
     col_p = PROPERTY_MAP.get(property_type)
     if col_p is not None and col_p in x:
         x[col_p] = 1
 
-    # tipo de habitación
     col_r = ROOM_MAP.get(room_type)
     if col_r is not None and col_r in x:
         x[col_r] = 1
 
-    # ordenar según FEATURE_COLS
+    # vector final en el orden correcto
     x_vec = np.array([[x[c] for c in FEATURE_COLS]], dtype=float)
     return x_vec
 
 
-# 2. Inicialización de la app
+# 3. DataFrame de visualización y probabilidades por zona
 
-app = Dash(__name__)
-
-
-# 3. Gráficas estáticas mejoradas
-
-# Preparación de datos de visualización
 df_viz = df.copy()
+
+# reconstruir zona legible desde las dummies
 df_viz["zona"] = np.select(
     [
         df_viz.get("neighbourhood_cleansed_East", 0) == 1,
@@ -135,10 +127,21 @@ df_viz["zona"] = np.select(
     ["East", "North", "South", "West"],
     default="Central",
 )
-df_viz["recom_label"] = np.where(
-    df_viz[TARGET_CLF] == 1, "Recomendado", "No recomendado"
-)
 
+# etiqueta de recomendado para el scatter
+df_viz["recom_label"] = np.where(df_viz[TARGET_CLF] == 1, "Recomendado", "No recomendado")
+
+# probabilidad histórica de recomendación por zona
+prob_zona = (
+    df_viz.groupby("zona", as_index=False)[TARGET_CLF]
+    .mean()
+    .rename(columns={TARGET_CLF: "prob_recomendado"})
+)
+# probabilidad global (promedio Londres)
+global_prob_recom = float(df_viz[TARGET_CLF].mean())
+
+
+# 4. Función de estilo común para las figuras
 
 def _estilo_figura(fig, titulo: str):
     fig.update_layout(
@@ -151,7 +154,7 @@ def _estilo_figura(fig, titulo: str):
         legend=dict(
             orientation="h",
             yanchor="top",
-            y=-0.2,  # leyenda debajo de la gráfica
+            y=-0.2,
             xanchor="center",
             x=0.5,
         ),
@@ -161,7 +164,8 @@ def _estilo_figura(fig, titulo: str):
     return fig
 
 
-# 3.1 Boxplot de precios por zona con puntos individuales
+# Gráfica 1: distribución de precios por zona (responde P2 en términos de precio)
+
 fig_box_zona = px.box(
     df_viz,
     x="zona",
@@ -172,56 +176,53 @@ fig_box_zona = px.box(
     labels={"zona": "Zona de Londres", TARGET_REG: "Precio por noche (GBP)"},
 )
 fig_box_zona = _estilo_figura(fig_box_zona, "Distribución de precios por zona")
-# el color ya está codificado en el eje X, podemos ocultar la leyenda
 fig_box_zona.update_layout(showlegend=False)
 
-# 3.2 Conteo de anuncios recomendados vs no recomendados
-recom_counts = (
-    df_viz.groupby("recom_label", as_index=False)[TARGET_CLF]
-    .count()
-    .rename(columns={TARGET_CLF: "conteo"})
+# Gráfica 2: probabilidad histórica de recomendación por zona (responde P2 en términos de recomendación)
+
+fig_prob_zona = px.bar(
+    prob_zona,
+    x="zona",
+    y="prob_recomendado",
+    text="prob_recomendado",
+    labels={"zona": "Zona de Londres", "prob_recomendado": "Probabilidad de recomendación"},
+)
+fig_prob_zona.update_traces(texttemplate="%{text:.1%}", textposition="outside")
+ymax = float(prob_zona["prob_recomendado"].max() * 1.1)
+fig_prob_zona.update_yaxes(tickformat=".0%", range=[0, ymax])
+fig_prob_zona = _estilo_figura(fig_prob_zona, "Probabilidad de recomendación por zona")
+fig_prob_zona.add_hline(
+    y=global_prob_recom,
+    line_dash="dash",
+    line_color="gray",
+    annotation_text="Promedio Londres",
+    annotation_position="top left",
 )
 
-fig_hist_recom = px.bar(
-    recom_counts,
-    x="recom_label",
-    y="conteo",
-    text="conteo",
-    labels={"recom_label": "Estado de recomendación", "conteo": "Número de anuncios"},
-)
-fig_hist_recom.update_traces(textposition="outside")
-fig_hist_recom = _estilo_figura(
-    fig_hist_recom, "Anuncios recomendados vs no recomendados"
-)
+# Gráfica 3: precio vs capacidad coloreado por recomendado (mezcla P2 y P3)
 
-# 3.3 Dispersión precio vs capacidad coloreado por zona
 if {"accommodates", TARGET_REG}.issubset(df_viz.columns):
-    hover_cols = []
-    if "minimum_nights" in df_viz.columns:
-        hover_cols.append("minimum_nights")
-    if "availability_365" in df_viz.columns:
-        hover_cols.append("availability_365")
-
-    fig_scatter_capacidad = px.scatter(
+    fig_scatter = px.scatter(
         df_viz,
         x="accommodates",
         y=TARGET_REG,
-        color="zona",
-        hover_data=hover_cols,
+        color="recom_label",
         labels={
             "accommodates": "Capacidad (huéspedes)",
             TARGET_REG: "Precio por noche (GBP)",
-            "zona": "Zona",
+            "recom_label": "Estado de recomendación",
         },
     )
-    fig_scatter_capacidad = _estilo_figura(
-        fig_scatter_capacidad, "Precio vs capacidad del anuncio"
+    fig_scatter = _estilo_figura(
+        fig_scatter, "Precio vs capacidad y estado de recomendación"
     )
 else:
-    fig_scatter_capacidad = None
+    fig_scatter = None
 
 
-# 4. Layout del tablero
+# 5. Inicialización de la app y layout
+
+app = Dash(__name__)
 
 app.layout = html.Div(
     style={
@@ -239,7 +240,7 @@ app.layout = html.Div(
                 ),
                 html.P(
                     "Explora el comportamiento de precios y recomendaciones en alojamientos de Airbnb en Londres. "
-                    "Ajusta las características de un anuncio y obtén un precio sugerido y la probabilidad de ser recomendado.",
+                    "Ajusta las características de un anuncio y obtén un precio sugerido y la probabilidad de que sea recomendado.",
                     style={
                         "textAlign": "center",
                         "maxWidth": "900px",
@@ -256,7 +257,7 @@ app.layout = html.Div(
                 "alignItems": "flex-start",
             },
             children=[
-                # Panel de entrada
+                # Panel de entrada (P1 y P3)
                 html.Div(
                     style={
                         "flex": "1",
@@ -361,10 +362,7 @@ app.layout = html.Div(
                                         dcc.Dropdown(
                                             id="input-zona",
                                             options=[
-                                                {
-                                                    "label": "Central",
-                                                    "value": "Central",
-                                                },
+                                                {"label": "Central", "value": "Central"},
                                                 {"label": "East", "value": "East"},
                                                 {"label": "North", "value": "North"},
                                                 {"label": "South", "value": "South"},
@@ -427,7 +425,7 @@ app.layout = html.Div(
                             ],
                         ),
                         html.Button(
-                            "Calcular precio y recomendación",
+                            "Calcular precio y probabilidad",
                             id="btn-calcular",
                             n_clicks=0,
                             style={
@@ -444,7 +442,7 @@ app.layout = html.Div(
                         ),
                     ],
                 ),
-                # Panel de resultados y gráficas
+                # Panel de resultados + gráficas (P1, P2 y P3)
                 html.Div(
                     style={
                         "flex": "1.6",
@@ -503,7 +501,7 @@ app.layout = html.Div(
                                         "padding": "8px",
                                         "boxShadow": "0 1px 3px rgba(0,0,0,0.06)",
                                     },
-                                    children=[dcc.Graph(figure=fig_hist_recom)],
+                                    children=[dcc.Graph(figure=fig_prob_zona)],
                                 ),
                             ],
                         ),
@@ -515,8 +513,8 @@ app.layout = html.Div(
                                 "boxShadow": "0 1px 3px rgba(0,0,0,0.06)",
                             },
                             children=[
-                                dcc.Graph(figure=fig_scatter_capacidad)
-                                if fig_scatter_capacidad is not None
+                                dcc.Graph(figure=fig_scatter)
+                                if fig_scatter is not None
                                 else html.Div(
                                     "No hay información suficiente para mostrar el gráfico de precio vs capacidad."
                                 )
@@ -530,8 +528,7 @@ app.layout = html.Div(
 )
 
 
-# 5. Callback de predicción
-
+# 6. Callback: conecta inputs con resultados (P1 y P3)
 
 @app.callback(
     [Output("output-precio", "children"), Output("output-recomendacion", "children")],
@@ -560,14 +557,13 @@ def actualizar_prediccion(
     property_type,
     room_type,
 ):
-    # Solo calculamos cuando el usuario haga clic (n_clicks > 0)
     if not n_clicks:
         return (
             "Precio sugerido: —",
-            "Probabilidad de ser recomendado: —",
+            "Probabilidad histórica de ser recomendado: —",
         )
 
-    # Construir vector de features
+    # 1. Precio sugerido (regresión MLP)
     x = build_feature_vector(
         accommodates,
         bedrooms,
@@ -579,39 +575,31 @@ def actualizar_prediccion(
         property_type,
         room_type,
     )
-
-    # Escalar
     x_scaled = scaler.transform(x)
-
-    # Modelo de regresión: precio
     price_pred = float(reg_model.predict(x_scaled)[0])
 
-    # Modelo de clasificación: probabilidad de ser recomendado
-    proba = clf_model.predict_proba(x_scaled)[0]
-
-    # Asegurarnos de tomar la columna de la clase "1"
-    if 1 in clf_model.classes_:
-        idx_pos = list(clf_model.classes_).index(1)
-        prob_recom = float(proba[idx_pos])
+    # 2. Probabilidad histórica por zona (coherente con la barra)
+    seg = prob_zona[prob_zona["zona"] == zona]
+    if len(seg) > 0:
+        prob_recom = float(seg["prob_recomendado"].iloc[0])
     else:
-        # Por seguridad: tomamos la clase con mayor probabilidad
-        idx_pos = int(np.argmax(proba))
-        prob_recom = float(proba[idx_pos])
+        prob_recom = global_prob_recom
 
-    # Recortar por si acaso
     prob_recom = max(0.0, min(1.0, prob_recom))
 
     texto_precio = f"Precio sugerido: {price_pred:,.0f} GBP por noche."
-    etiqueta = "Recomendado" if prob_recom >= 0.5 else "No recomendado"
+    etiqueta = "Recomendado" if prob_recom >= global_prob_recom else "No recomendado"
     texto_recom = (
-        f"Probabilidad de ser recomendado: {prob_recom*100:,.1f}% ({etiqueta})."
+        f"Probabilidad histórica de ser recomendado en la zona {zona}: "
+        f"{prob_recom*100:,.1f}% ({etiqueta}). "
+        f"Promedio Londres: {global_prob_recom*100:,.1f}%."
     )
 
     return texto_precio, texto_recom
 
 
-# 6. Main
+# 7. Main
 
 if __name__ == "__main__":
-    # host 0.0.0.0 y puerto 8050 para Docker/AWS
     app.run(host="0.0.0.0", port=8050, debug=False)
+
