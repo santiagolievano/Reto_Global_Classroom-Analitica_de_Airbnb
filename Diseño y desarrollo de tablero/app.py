@@ -6,8 +6,7 @@ from dash import Dash, dcc, html, Input, Output, State
 import plotly.express as px
 
 
-# 1. Carga de datos y modelos
-
+## Carga de datos y modelos
 DATA_PATH = "base_final_con_recomendacion.csv"
 df = pd.read_csv(DATA_PATH)
 
@@ -15,61 +14,45 @@ TARGET_REG = "price"
 TARGET_CLF = "recomended"
 FEATURE_COLS = [c for c in df.columns if c not in [TARGET_REG, TARGET_CLF]]
 
-# scaler y modelo de regresión entrenado
+# Scaler y modelo de regresión entrenado
 scaler = joblib.load("scaler_airbnb_london.pkl")
 reg_model = joblib.load("mlp_regresion_price_airbnb.pkl")
 
 
-# 2. Valores por defecto para construir el vector de entrada
-
+## Valores por defecto para construir el vector de entrada
 default_values: dict[str, float] = {}
 for col in FEATURE_COLS:
     uniques = set(df[col].dropna().unique())
-    if uniques <= {0, 1}:  # dummies
+    if uniques <= {0, 1}:
         default_values[col] = 0.0
     else:
         default_values[col] = float(df[col].median())
 
 
-# Mapeos de dropdowns -> columnas dummy (ojo con el nombre real del csv)
+# Mapeos de dropdowns
+ZONA_MAP = {"Central": None, 
+            "East": "neighbourhood_cleansed_East",
+            "North": "neighbourhood_cleansed_North",
+            "South": "neighbourhood_cleansed_South",
+            "West": "neighbourhood_cleansed_West",}
 
-ZONA_MAP = {
-    "Central": None,
-    "East": "neighbourhood_cleansed_East",
-    "North": "neighbourhood_cleansed_North",
-    "South": "neighbourhood_cleansed_South",
-    "West": "neighbourhood_cleansed_West",
-}
+PROPERTY_MAP = {"Entire home/apt": None,
+                "Private room": "property_type_Private Room",
+                "Other": "property_type_Other",}
 
-PROPERTY_MAP = {
-    "Entire home/apt": None,
-    "Private room": "property_type_Private Room",  # nombre exacto de la columna
-    "Other": "property_type_Other",
-}
-
-ROOM_MAP = {
-    "Entire home/apt": None,
-    "Private room": "room_type_Private room",
-    "Shared room": "room_type_Shared room",
-    "Hotel room": "room_type_Hotel room",
-}
+ROOM_MAP = {"Entire home/apt": None,
+            "Private room": "room_type_Private room",
+            "Shared room": "room_type_Shared room",
+            "Hotel room": "room_type_Hotel room",}
 
 
-def build_feature_vector(
-    accommodates,
-    bedrooms,
-    bathrooms,
-    beds,
-    minimum_nights,
-    availability_365,
-    zona,
-    property_type,
-    room_type,
-):
+def build_feature_vector(accommodates,bedrooms,bathrooms,beds,minimum_nights,availability_365,
+                         zona,property_type,room_type,):
+    
     """Construye el vector de características en el mismo orden que se usó para entrenar."""
     x = default_values.copy()
 
-    # numéricas principales
+    # Numéricas principales
     if accommodates is not None and "accommodates" in x:
         x["accommodates"] = accommodates
     if bedrooms is not None and "bedrooms" in x:
@@ -83,7 +66,7 @@ def build_feature_vector(
     if availability_365 is not None and "availability_365" in x:
         x["availability_365"] = availability_365
 
-    # reset dummies
+    # Reset dummies
     for col in ZONA_MAP.values():
         if col is not None and col in x:
             x[col] = 0
@@ -94,7 +77,7 @@ def build_feature_vector(
         if col is not None and col in x:
             x[col] = 0
 
-    # prender dummies seleccionadas
+    # Prender dummies seleccionadas
     col_z = ZONA_MAP.get(zona)
     if col_z is not None and col_z in x:
         x[col_z] = 1
@@ -107,42 +90,35 @@ def build_feature_vector(
     if col_r is not None and col_r in x:
         x[col_r] = 1
 
-    # vector final en el orden correcto
+    # Vector final en el orden correcto
     x_vec = np.array([[x[c] for c in FEATURE_COLS]], dtype=float)
     return x_vec
 
 
-# 3. DataFrame de visualización y probabilidades por zona
-
+## DataFrame de visualización y probabilidades por zona
 df_viz = df.copy()
 
-# reconstruir zona legible desde las dummies
-df_viz["zona"] = np.select(
-    [
-        df_viz.get("neighbourhood_cleansed_East", 0) == 1,
-        df_viz.get("neighbourhood_cleansed_North", 0) == 1,
-        df_viz.get("neighbourhood_cleansed_South", 0) == 1,
-        df_viz.get("neighbourhood_cleansed_West", 0) == 1,
-    ],
-    ["East", "North", "South", "West"],
-    default="Central",
-)
+# Reconstruir zona legible desde las dummies
+df_viz["zona"] = np.select([df_viz.get("neighbourhood_cleansed_East", 0) == 1,
+                            df_viz.get("neighbourhood_cleansed_North", 0) == 1,
+                            df_viz.get("neighbourhood_cleansed_South", 0) == 1,
+                            df_viz.get("neighbourhood_cleansed_West", 0) == 1,],
+                            ["East", "North", "South", "West"],
+                            default="Central",)
 
-# etiqueta de recomendado para el scatter
+# Etiqueta de recomendado para el scatter
 df_viz["recom_label"] = np.where(df_viz[TARGET_CLF] == 1, "Recomendado", "No recomendado")
 
-# probabilidad histórica de recomendación por zona
+# Probabilidad histórica de recomendación por zona
 prob_zona = (
     df_viz.groupby("zona", as_index=False)[TARGET_CLF]
     .mean()
     .rename(columns={TARGET_CLF: "prob_recomendado"})
 )
-# probabilidad global (promedio Londres)
+# Probabilidad global (promedio Londres)
 global_prob_recom = float(df_viz[TARGET_CLF].mean())
 
-
-# 4. Función de estilo común para las figuras
-
+## Función de estilo común para las figuras
 def _estilo_figura(fig, titulo: str):
     fig.update_layout(
         title=dict(text=titulo, x=0.5, xanchor="center"),
@@ -163,9 +139,7 @@ def _estilo_figura(fig, titulo: str):
     fig.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.08)")
     return fig
 
-
-# Gráfica 1: distribución de precios por zona (responde P2 en términos de precio)
-
+# Gráfica 1: Distribución de precios por zona
 fig_box_zona = px.box(
     df_viz,
     x="zona",
@@ -178,8 +152,7 @@ fig_box_zona = px.box(
 fig_box_zona = _estilo_figura(fig_box_zona, "Distribución de precios por zona")
 fig_box_zona.update_layout(showlegend=False)
 
-# Gráfica 2: probabilidad histórica de recomendación por zona (responde P2 en términos de recomendación)
-
+# Gráfica 2: Probabilidad histórica de recomendación por zona
 fig_prob_zona = px.bar(
     prob_zona,
     x="zona",
@@ -199,8 +172,7 @@ fig_prob_zona.add_hline(
     annotation_position="top left",
 )
 
-# Gráfica 3: precio vs capacidad coloreado por recomendado (mezcla P2 y P3)
-
+# Gráfica 3: Precio vs Capacidad coloreado por recomendado
 if {"accommodates", TARGET_REG}.issubset(df_viz.columns):
     fig_scatter = px.scatter(
         df_viz,
@@ -220,8 +192,7 @@ else:
     fig_scatter = None
 
 
-# 5. Inicialización de la app y layout
-
+## Inicialización de la app y layout
 app = Dash(__name__)
 
 app.layout = html.Div(
@@ -257,7 +228,7 @@ app.layout = html.Div(
                 "alignItems": "flex-start",
             },
             children=[
-                # Panel de entrada (P1 y P3)
+                # Panel de entrada
                 html.Div(
                     style={
                         "flex": "1",
@@ -442,7 +413,7 @@ app.layout = html.Div(
                         ),
                     ],
                 ),
-                # Panel de resultados + gráficas (P1, P2 y P3)
+                # Panel de resultados + gráficas
                 html.Div(
                     style={
                         "flex": "1.6",
@@ -528,8 +499,7 @@ app.layout = html.Div(
 )
 
 
-# 6. Callback: conecta inputs con resultados (P1 y P3)
-
+## Callback
 @app.callback(
     [Output("output-precio", "children"), Output("output-recomendacion", "children")],
     inputs=[Input("btn-calcular", "n_clicks")],
@@ -563,7 +533,7 @@ def actualizar_prediccion(
             "Probabilidad histórica de ser recomendado: —",
         )
 
-    # 1. Precio sugerido (regresión MLP)
+    # Precio sugerido (regresión MLP)
     x = build_feature_vector(
         accommodates,
         bedrooms,
@@ -578,7 +548,7 @@ def actualizar_prediccion(
     x_scaled = scaler.transform(x)
     price_pred = float(reg_model.predict(x_scaled)[0])
 
-    # 2. Probabilidad histórica por zona (coherente con la barra)
+    # Probabilidad histórica por zona
     seg = prob_zona[prob_zona["zona"] == zona]
     if len(seg) > 0:
         prob_recom = float(seg["prob_recomendado"].iloc[0])
@@ -597,9 +567,7 @@ def actualizar_prediccion(
 
     return texto_precio, texto_recom
 
-
-# 7. Main
-
+# Main
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8050, debug=False)
 
